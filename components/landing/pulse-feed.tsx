@@ -162,7 +162,7 @@ export default async function PulseFeed() {
   return (
     <div className="min-h-screen">
       <section className="border-b border-border bg-vault-deep/60">
-        <div className="container mx-auto px-4 py-5">
+        <div className="mx-auto w-full max-w-[1600px] px-2 sm:px-3 py-5">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <GlitchHeading as="h1" className="text-2xl font-bold text-vault-cream">
@@ -181,9 +181,10 @@ export default async function PulseFeed() {
         </div>
       </section>
 
-      <div className="container mx-auto px-4 py-8 space-y-8">
+      {/* Wider layout: ~half the previous side gutter so color shells dominate the page */}
+      <div className="mx-auto w-full max-w-[1600px] px-2 sm:px-3 py-5 space-y-5">
         {needsHelpList.length > 0 && (
-          <PulseSectionShell accent="from-vault-gold/15 to-transparent" staggerIndex={0}>
+          <PulseSectionShell accent="from-vault-gold/45 via-vault-gold/20 to-transparent" staggerIndex={0}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <HandHelping className="h-5 w-5 text-vault-gold" />
@@ -221,7 +222,7 @@ export default async function PulseFeed() {
           </PulseSectionShell>
         )}
 
-        <PulseSectionShell accent="from-sky-500/10 to-transparent" staggerIndex={1}>
+        <PulseSectionShell accent="from-sky-500/40 via-sky-500/15 to-transparent" staggerIndex={1}>
           <SectionHeader icon={Film} title="Fresh Clips" href="/clips" />
           {clips.length === 0 ? (
             <p className="text-muted-foreground text-sm">No clips yet. Be the first.</p>
@@ -248,7 +249,7 @@ export default async function PulseFeed() {
           )}
         </PulseSectionShell>
 
-        <PulseSectionShell accent="from-rose-500/10 to-transparent" staggerIndex={2}>
+        <PulseSectionShell accent="from-rose-500/40 via-rose-500/15 to-transparent" staggerIndex={2}>
           <SectionHeader icon={Palette} title="Fan Art" href="/fan-art" />
           {fanArt.length === 0 ? (
             <p className="text-muted-foreground text-sm">Blank wall. Hang something.</p>
@@ -275,7 +276,7 @@ export default async function PulseFeed() {
           )}
         </PulseSectionShell>
 
-        <PulseSectionShell accent="from-[#e056a0]/12 to-transparent" staggerIndex={3}>
+        <PulseSectionShell accent="from-[#e056a0]/40 via-[#e056a0]/15 to-transparent" staggerIndex={3}>
           <SectionHeader icon={Sparkles} title="New in the Vault" href="/discover" />
           {vtubers.length === 0 ? (
             <p className="text-muted-foreground text-sm">No new creators this cycle.</p>
@@ -310,8 +311,8 @@ export default async function PulseFeed() {
           )}
         </PulseSectionShell>
 
-        <div className="grid md:grid-cols-2 gap-8">
-          <PulseSectionShell accent="from-vault-gold/12 to-transparent" staggerIndex={4}>
+        <div className="grid md:grid-cols-2 gap-5">
+          <PulseSectionShell accent="from-vault-gold/40 via-vault-gold/15 to-transparent" staggerIndex={4}>
             <SectionHeader icon={Trophy} title="Live Predictions" href="/bets" />
             {predictions.length === 0 ? (
               <p className="text-muted-foreground text-sm">No open predictions right now.</p>
@@ -327,7 +328,7 @@ export default async function PulseFeed() {
             )}
           </PulseSectionShell>
 
-          <PulseSectionShell accent="from-sky-500/10 to-transparent" staggerIndex={5}>
+          <PulseSectionShell accent="from-sky-500/40 via-sky-500/15 to-transparent" staggerIndex={5}>
             <SectionHeader icon={MessageSquare} title="From the Forums" href="/forums" />
             {posts.length === 0 ? (
               <p className="text-muted-foreground text-sm">Crickets. Say something.</p>
