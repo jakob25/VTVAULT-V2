@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { Film, Palette, Sparkles, Trophy, MessageSquare, ExternalLink, ArrowRight, HandHelping } from 'lucide-react'
 import { GlitchHeading } from '@/components/vault/glitch-heading'
 import { VaultDivider, VaultPanel, GalleryWall, GalleryWallItem, StatCard } from '@/components/vault/vault-surfaces'
+import { PulseSectionShell } from '@/components/landing/pulse-section-shell'
 import { supabaseAdmin } from '@/lib/supabase'
 
 export const revalidate = 30
@@ -180,9 +181,9 @@ export default async function PulseFeed() {
         </div>
       </section>
 
-      <div className="container mx-auto px-4 py-8 space-y-12">
+      <div className="container mx-auto px-4 py-8 space-y-8">
         {needsHelpList.length > 0 && (
-          <section>
+          <PulseSectionShell accent="from-vault-gold/15 to-transparent" staggerIndex={0}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <HandHelping className="h-5 w-5 text-vault-gold" />
@@ -197,7 +198,7 @@ export default async function PulseFeed() {
                 <Link
                   key={v.id}
                   href={`/vtuber/${v.id}`}
-                  className="vault-card rounded-xl p-4 hover:border-vault-gold/40 transition-all flex items-center gap-3 border border-vault-gold/20"
+                  className="vault-card rounded-xl p-4 hover:border-vault-gold/40 transition-all flex items-center gap-3 border border-vault-gold/20 bg-vault-deep/40"
                 >
                   {v.avatar_url ? (
                     <img
@@ -217,10 +218,10 @@ export default async function PulseFeed() {
                 </Link>
               ))}
             </div>
-          </section>
+          </PulseSectionShell>
         )}
 
-        <section>
+        <PulseSectionShell accent="from-sky-500/10 to-transparent" staggerIndex={1}>
           <SectionHeader icon={Film} title="Fresh Clips" href="/clips" />
           {clips.length === 0 ? (
             <p className="text-muted-foreground text-sm">No clips yet. Be the first.</p>
@@ -232,7 +233,7 @@ export default async function PulseFeed() {
                   href={c.clip_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="vault-card rounded-xl p-4 hover:border-vault-gold/30 transition-all block"
+                  className="vault-card rounded-xl p-4 hover:border-vault-gold/30 transition-all block bg-vault-deep/40"
                 >
                   <p className="font-medium text-vault-cream text-sm line-clamp-2 mb-2">{c.title}</p>
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -245,9 +246,9 @@ export default async function PulseFeed() {
               ))}
             </div>
           )}
-        </section>
+        </PulseSectionShell>
 
-        <section>
+        <PulseSectionShell accent="from-rose-500/10 to-transparent" staggerIndex={2}>
           <SectionHeader icon={Palette} title="Fan Art" href="/fan-art" />
           {fanArt.length === 0 ? (
             <p className="text-muted-foreground text-sm">Blank wall. Hang something.</p>
@@ -272,9 +273,9 @@ export default async function PulseFeed() {
                 ))}
             </GalleryWall>
           )}
-        </section>
+        </PulseSectionShell>
 
-        <section>
+        <PulseSectionShell accent="from-[#e056a0]/12 to-transparent" staggerIndex={3}>
           <SectionHeader icon={Sparkles} title="New in the Vault" href="/discover" />
           {vtubers.length === 0 ? (
             <p className="text-muted-foreground text-sm">No new creators this cycle.</p>
@@ -284,7 +285,7 @@ export default async function PulseFeed() {
                 <Link
                   key={v.id}
                   href={`/vtuber/${v.id}`}
-                  className="vault-card rounded-xl p-4 hover:border-vault-gold/30 transition-all flex items-center gap-3"
+                  className="vault-card rounded-xl p-4 hover:border-vault-gold/30 transition-all flex items-center gap-3 bg-vault-deep/40"
                 >
                   {v.avatar_url ? (
                     <img
@@ -307,40 +308,40 @@ export default async function PulseFeed() {
               ))}
             </div>
           )}
-        </section>
+        </PulseSectionShell>
 
         <div className="grid md:grid-cols-2 gap-8">
-          <section>
+          <PulseSectionShell accent="from-vault-gold/12 to-transparent" staggerIndex={4}>
             <SectionHeader icon={Trophy} title="Live Predictions" href="/bets" />
             {predictions.length === 0 ? (
               <p className="text-muted-foreground text-sm">No open predictions right now.</p>
             ) : (
               <div className="space-y-2">
                 {predictions.map((p: any) => (
-                  <VaultPanel key={p.id} className="p-3">
+                  <VaultPanel key={p.id} className="p-3 bg-vault-deep/40">
                     <p className="text-sm text-vault-cream line-clamp-1">{p.title}</p>
                     <p className="text-xs text-vault-gold mt-0.5">{p.vtuber_name}</p>
                   </VaultPanel>
                 ))}
               </div>
             )}
-          </section>
+          </PulseSectionShell>
 
-          <section>
+          <PulseSectionShell accent="from-sky-500/10 to-transparent" staggerIndex={5}>
             <SectionHeader icon={MessageSquare} title="From the Forums" href="/forums" />
             {posts.length === 0 ? (
               <p className="text-muted-foreground text-sm">Crickets. Say something.</p>
             ) : (
               <div className="space-y-2">
                 {posts.map((p: any) => (
-                  <VaultPanel key={p.id} className="p-3">
+                  <VaultPanel key={p.id} className="p-3 bg-vault-deep/40">
                     <p className="text-sm text-vault-cream line-clamp-2">{p.content}</p>
                     <p className="text-xs text-muted-foreground mt-1">{p.username}</p>
                   </VaultPanel>
                 ))}
               </div>
             )}
-          </section>
+          </PulseSectionShell>
         </div>
 
         <VaultDivider />
