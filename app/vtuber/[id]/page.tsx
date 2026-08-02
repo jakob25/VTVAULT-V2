@@ -10,6 +10,7 @@ import {
 import { PageBackNav } from '@/components/vault/page-back-nav'
 import { ClaimProfileButton } from '@/components/vtuber/claim-profile-button'
 import { AddToCircleButton } from '@/components/vtuber/add-to-circle-button'
+import { NeedsHelpContribute } from '@/components/vtuber/needs-help-contribute'
 import { RecommendedStrip } from '@/components/corpo/recommended-strip'
 import { SilhouetteAssetPanel } from '@/components/discovery/silhouette-asset-panel'
 import { fetchDossierSidebarData } from '@/lib/vtuber-dossier-data'
@@ -89,6 +90,10 @@ export default async function VTuberProfilePage({ params }: Props) {
     }
   }
 
+  const needsHelp =
+    !(vtuber.bio && String(vtuber.bio).trim()) &&
+    (!Array.isArray(vtuber.tags) || vtuber.tags.length === 0)
+
   return (
     <div className="min-h-screen">
       <div className="container mx-auto px-4 py-8 max-w-6xl">
@@ -124,6 +129,12 @@ export default async function VTuberProfilePage({ params }: Props) {
                 approved={vtuber.approved !== false}
               />
             </div>
+
+            <NeedsHelpContribute
+              vtuberId={vtuber.id}
+              vtuberName={vtuber.name}
+              needsHelp={needsHelp}
+            />
 
             <SilhouetteAssetPanel
               vtuberId={vtuber.id}

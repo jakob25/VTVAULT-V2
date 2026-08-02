@@ -1,18 +1,39 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import Link from 'next/link'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useVibeTags, useVTubers } from '@/hooks/use-data'
 import { useAuth } from '@/lib/auth-context'
-import { validateClipUrl, extractVideoId, parseTimestamp } from '@/lib/embed-utils'
+import { validateClipUrl, extractVideoId, extractTwitchChannel } from '@/lib/embed-utils'
 import { Plus, AlertCircle, CheckCircle, Link as LinkIcon, Loader2 } from 'lucide-react'
+import type { VTuber } from '@/lib/types'
 
 interface ClipSubmitFormProps {
   prefillVtuberId?: string
   onSuccess?: () => void
   onCancel?: () => void
 }
+
+function matchVtuberFromHint(vtubers: VTuber[], hint: string): VTuber | undefined {
+  const h = hint.trim().toLowerCase()
+  if (!h) return undefined
+
+  // Exact name
+  const exact = vtubers.find(v => v.name.toLowerCase() === h)
+  if (exact) return exact
+
+  // Twitch/YouTube link contains the login (e.g. twitch.tv/maikyua)
+  const byLink = vtubers.find(v =>
+    (v.externalLinks ?? []).some(l => l.url.toLowerCase().includes(`/${h}`))
+  )
+  if (byLink) return byLink
+
+  // Name contains login (common for display names)
+  return vtubers.find(v => v.name.toLowerCase().includes(h))
+}
+
 export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSubmitFormProps) {
   const { vibeTags } = useVibeTags()
   const { vtubers } = useVTubers()
@@ -24,26 +45,85 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
   const [extractedInfo, setExtractedInfo] = useState<{ platform: string; videoId: string } | null>(null)
   const [title, setTitle] = useState('')
   const [selectedVTuber, setSelectedVTuber] = useState(prefillVtuberId ?? '')
+  const [freeTextName, setFreeTextName] = useState('')
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [clipType, setClipType] = useState<'raw' | 'edited'>('raw')
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
 
+  // Auto-pull meta from link
+  const [metaLoading, setMetaLoading] = useState(false)
+  const [thumbnail, setThumbnail] = useState<string | null>(null)
+  const [titleAutoFilled, setTitleAutoFilled] = useState(false)
+  const [authorFromMeta, setAuthorFromMeta] = useState<string | null>(null)
+  const titleTouchedRef = useRef(false)
+  const nameTouchedRef = useRef(false)
+  const lastFetchedUrlRef = useRef('')
+
+  const applyCreatorHint = (hint: string) => {
+    if (!hint || nameTouchedRef.current || prefillVtuberId) return
+    const match = matchVtuberFromHint(vtubers, hint)
+    if (match) {
+      setSelectedVTuber(match.id)
+      setFreeTextName('')
+    } else if (!selectedVTuber) {
+      setFreeTextName(hint)
+    }
+    setAuthorFromMeta(hint)
+  }
+
   const handleUrlChange = (value: string) => {
     setUrl(value)
     setUrlError(null)
     setUrlValid(false)
     setExtractedInfo(null)
+    setThumbnail(null)
+    setAuthorFromMeta(null)
     if (!value) return
     const validation = validateClipUrl(value)
     if (!validation.valid) {
       setUrlError(validation.error || 'Invalid URL')
     } else {
       const info = extractVideoId(value)
-      if (info) { setExtractedInfo(info); setUrlValid(true) }
+      if (info) {
+        setExtractedInfo(info)
+        setUrlValid(true)
+        // Instant Twitch channel from path (no network wait)
+        const channel = extractTwitchChannel(value)
+        if (channel) applyCreatorHint(channel)
+      }
     }
   }
+
+  // Fetch title + thumbnail + author when URL becomes valid
+  useEffect(() => {
+    if (!urlValid || !url || url === lastFetchedUrlRef.current) return
+
+    let cancelled = false
+    setMetaLoading(true)
+    lastFetchedUrlRef.current = url
+
+    fetch(`/api/clip-meta?url=${encodeURIComponent(url)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        if (cancelled || !data) return
+        if (data.thumbnail) setThumbnail(data.thumbnail)
+        if (data.title && !titleTouchedRef.current) {
+          setTitle(data.title)
+          setTitleAutoFilled(true)
+        }
+        const hint = (data.channel || data.author) as string | undefined
+        if (hint) applyCreatorHint(hint)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setMetaLoading(false)
+      })
+
+    return () => { cancelled = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, urlValid, vtubers, prefillVtuberId])
 
   const toggleTag = (tagId: string) => {
     setSelectedTags(prev =>
@@ -54,20 +134,27 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!user) { setSubmitError('You must be signed in to submit a clip.'); return }
-    if (!urlValid || !extractedInfo || !title || !selectedVTuber) return
+    if (!urlValid || !extractedInfo || !title) return
+    if (!selectedVTuber && !freeTextName.trim()) return
 
     setSubmitting(true)
     setSubmitError(null)
+
+    const selectedName = selectedVTuber
+      ? (vtubers.find(v => v.id === selectedVTuber)?.name ?? '')
+      : freeTextName.trim()
 
     const res = await fetch('/api/clips', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        profile_id: selectedVTuber,
+        profile_id: selectedVTuber || null,
         username: user.username,
         title,
         url,
         type: clipType,
+        tags: selectedTags,
+        vtuber_name: selectedName || freeTextName.trim() || null,
       }),
     })
 
@@ -83,7 +170,7 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
     setTimeout(() => onSuccess?.(), 1200)
   }
 
-  const isValid = urlValid && !!title && !!selectedVTuber
+  const isValid = urlValid && !!title && (!!selectedVTuber || !!freeTextName.trim())
 
   if (done) {
     return (
@@ -91,6 +178,15 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
         <CheckCircle className="h-10 w-10 text-vault-gold" />
         <p className="font-semibold text-vault-cream">Clip submitted!</p>
         <p className="text-sm text-muted-foreground">Thanks for contributing to the Vault.</p>
+        {!selectedVTuber && freeTextName.trim() && (
+          <p className="text-xs text-muted-foreground max-w-sm">
+            This creator isn&apos;t in the Vault yet.{' '}
+            <Link href="/nominator" className="text-vault-gold hover:underline">
+              Nominate them
+            </Link>{' '}
+            so they can get a full profile.
+          </p>
+        )}
       </div>
     )
   }
@@ -116,40 +212,101 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
             className={`bg-muted/30 border-border text-vault-cream placeholder:text-muted-foreground pr-10 ${urlError ? 'border-destructive' : ''} ${urlValid ? 'border-vault-gold' : ''}`}
           />
           <div className="absolute right-3 top-1/2 -translate-y-1/2">
-            {urlError && <AlertCircle className="h-4 w-4 text-destructive" />}
-            {urlValid && <CheckCircle className="h-4 w-4 text-vault-gold" />}
+            {metaLoading && <Loader2 className="h-4 w-4 text-vault-gold animate-spin" />}
+            {!metaLoading && urlError && <AlertCircle className="h-4 w-4 text-destructive" />}
+            {!metaLoading && urlValid && <CheckCircle className="h-4 w-4 text-vault-gold" />}
           </div>
         </div>
         {urlError && <p className="mt-1 text-xs text-destructive">{urlError}</p>}
         {extractedInfo && (
           <p className="mt-1 text-xs text-vault-gold flex items-center gap-1">
             <LinkIcon className="h-3 w-3" /> Detected: {extractedInfo.platform}
+            {authorFromMeta && ` · ${authorFromMeta}`}
+            {metaLoading && ' · pulling title…'}
+            {!metaLoading && titleAutoFilled && ' · title pulled from link'}
           </p>
         )}
       </div>
 
+      {/* Thumbnail preview when available */}
+      {thumbnail && (
+        <div className="rounded-lg overflow-hidden border border-border bg-muted/20">
+          <img
+            src={thumbnail}
+            alt="Clip preview"
+            className="w-full aspect-video object-cover"
+          />
+        </div>
+      )}
+
       {/* Title */}
       <div>
-        <label className="block text-sm font-medium text-vault-cream mb-1.5">Clip Title</label>
+        <label className="block text-sm font-medium text-vault-cream mb-1.5">
+          Clip Title
+          {titleAutoFilled && !titleTouchedRef.current && (
+            <span className="ml-2 text-xs text-vault-gold font-normal">auto-filled from link</span>
+          )}
+        </label>
         <Input
           placeholder="Give this moment a memorable title..."
           value={title}
-          onChange={e => setTitle(e.target.value)}
+          onChange={e => {
+            titleTouchedRef.current = true
+            setTitleAutoFilled(false)
+            setTitle(e.target.value)
+          }}
           className="bg-muted/30 border-border text-vault-cream placeholder:text-muted-foreground"
         />
       </div>
 
-      {/* VTuber */}
-      <div>
-        <label className="block text-sm font-medium text-vault-cream mb-1.5">VTuber</label>
-        <select
-          value={selectedVTuber}
-          onChange={e => setSelectedVTuber(e.target.value)}
-          className="w-full px-3 py-2 rounded-md bg-muted/30 border border-border text-vault-cream text-sm"
-        >
-          <option value="">Select a VTuber...</option>
-          {vtubers.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-        </select>
+      {/* VTuber — existing or not-yet-in-Vault */}
+      <div className="space-y-3">
+        <div>
+          <label className="block text-sm font-medium text-vault-cream mb-1.5">VTuber</label>
+          <select
+            value={selectedVTuber}
+            onChange={e => {
+              setSelectedVTuber(e.target.value)
+              if (e.target.value) {
+                setFreeTextName('')
+                nameTouchedRef.current = false
+              }
+            }}
+            className="w-full px-3 py-2 rounded-md bg-muted/30 border border-border text-vault-cream text-sm"
+          >
+            <option value="">Not in the Vault yet / type name below</option>
+            {vtubers.map(v => (
+              <option key={v.id} value={v.id}>{v.name}</option>
+            ))}
+          </select>
+        </div>
+
+        {!selectedVTuber && (
+          <div>
+            <label className="block text-sm font-medium text-vault-cream mb-1.5">
+              Creator name
+              {authorFromMeta && !nameTouchedRef.current && freeTextName.toLowerCase() === authorFromMeta.toLowerCase() && (
+                <span className="ml-2 text-xs text-vault-gold font-normal">from link</span>
+              )}
+            </label>
+            <Input
+              placeholder="Name of the VTuber in this clip"
+              value={freeTextName}
+              onChange={e => {
+                nameTouchedRef.current = true
+                setFreeTextName(e.target.value)
+              }}
+              className="bg-muted/30 border-border text-vault-cream placeholder:text-muted-foreground"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Clip still goes through. You can{' '}
+              <Link href="/nominator" className="text-vault-gold hover:underline">
+                nominate this creator
+              </Link>{' '}
+              so they get a full profile later.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Type */}
