@@ -158,9 +158,11 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
       }),
     })
 
-    const data = await res.json()
+    const data = await res.json().catch(() => ({}))
     if (!res.ok) {
-      setSubmitError(data.error ?? 'Something went wrong.')
+      const detail = typeof data.detail === 'string' ? data.detail : null
+      const base = typeof data.error === 'string' ? data.error : 'Something went wrong.'
+      setSubmitError(detail ? `${base} (${detail})` : base)
       setSubmitting(false)
       return
     }
