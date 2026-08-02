@@ -24,6 +24,10 @@ function platformLabelFromUrl(url: string): string {
   return ''
 }
 
+function compactName(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
 async function resolveOrCreateStubProfile(opts: {
   profileId: string | null | undefined
   nameFromBody: string
@@ -51,30 +55,70 @@ async function resolveOrCreateStubProfile(opts: {
     return { profileId: null, resolvedName: null, createdStub: false }
   }
 
-  // Match existing by name (case-insensitive exact)
-  const { data: existing } = await supabaseAdmin
+  const compact = compactName(nameFromBody)
+
+  // Exact name match
+  const { data: existingExact } = await supabaseAdmin
     .from('vtubers')
     .select('id, name')
     .ilike('name', nameFromBody)
     .limit(1)
     .maybeSingle()
 
-  if (existing) {
+  if (existingExact) {
     return {
-      profileId: existing.id,
-      resolvedName: existing.name,
+      profileId: existingExact.id,
+      resolvedName: existingExact.name,
       createdStub: false,
     }
   }
 
+  // Handle match (often the Twitch login without spaces)
+  if (compact) {
+    const { data: byHandle } = await supabaseAdmin
+      .from('vtubers')
+      .select('id, name, handle')
+      .ilike('handle', compact)
+      .limit(1)
+      .maybeSingle()
+
+    if (byHandle) {
+      return {
+        profileId: byHandle.id,
+        resolvedName: byHandle.name,
+        createdStub: false,
+      }
+    }
+
+    // Compact name match: "maikyua" → "Mai Kuyua"
+    // Pull a bounded set of approved profiles and compare without spaces
+    const { data: candidates } = await supabaseAdmin
+      .from('vtubers')
+      .select('id, name, handle')
+      .eq('approved', true)
+      .limit(2000)
+
+    const byCompact = (candidates ?? []).find(
+      (v: { id: string; name: string; handle?: string }) =>
+        compactName(v.name) === compact || compactName(v.handle ?? '') === compact
+    )
+    if (byCompact) {
+      return {
+        profileId: byCompact.id,
+        resolvedName: byCompact.name,
+        createdStub: false,
+      }
+    }
+  }
+
   // Auto-create approved stub so they get a live profile immediately
-  const id = `vt_${nameFromBody.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16)}_${randomUUID().slice(0, 6)}`
+  const id = `vt_${compact.slice(0, 16) || 'unknown'}_${randomUUID().slice(0, 6)}`
   const platform = platformLabelFromUrl(clipUrl)
 
   const { error: insertError } = await supabaseAdmin.from('vtubers').insert({
     id,
     name: nameFromBody,
-    handle: nameFromBody.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 24) || id.slice(0, 16),
+    handle: compact.slice(0, 24) || id.slice(0, 16),
     platform,
     link: '',
     bio: '',
@@ -182,9 +226,7 @@ export async function POST(req: NextRequest) {
       upvotes: 0,
       created_at: new Date().toISOString(),
     }
-    // Drop profile if it was the problem too
     if (/profile_id/i.test(error.message)) minimal.profile_id = null
-    // Drop tags if needed
     if (/tags/i.test(error.message)) delete minimal.tags
     const retry = await supabaseAdmin.from('clips').insert(minimal)
     error = retry.error
