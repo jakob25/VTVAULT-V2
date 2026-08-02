@@ -16,22 +16,36 @@ interface ClipSubmitFormProps {
   onCancel?: () => void
 }
 
-function matchVtuberFromHint(vtubers: VTuber[], hint: string): VTuber | undefined {
-  const h = hint.trim().toLowerCase()
-  if (!h) return undefined
+/** Strip spaces/punctuation so twitch login "maikyua" matches display name "Mai Kuyua". */
+function compactName(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
 
-  // Exact name
-  const exact = vtubers.find(v => v.name.toLowerCase() === h)
+function matchVtuberFromHint(vtubers: VTuber[], hint: string): VTuber | undefined {
+  const h = hint.trim()
+  if (!h) return undefined
+  const compact = compactName(h)
+  if (!compact) return undefined
+
+  // Exact name (case-insensitive)
+  const exact = vtubers.find(v => v.name.toLowerCase() === h.toLowerCase())
   if (exact) return exact
+
+  // Compact match: "maikyua" ↔ "Mai Kuyua" / "Mai_Kuyua"
+  const byCompact = vtubers.find(v => compactName(v.name) === compact)
+  if (byCompact) return byCompact
 
   // Twitch/YouTube link contains the login (e.g. twitch.tv/maikyua)
   const byLink = vtubers.find(v =>
-    (v.externalLinks ?? []).some(l => l.url.toLowerCase().includes(`/${h}`))
+    (v.externalLinks ?? []).some(l => {
+      const url = l.url.toLowerCase()
+      return url.includes(`/${compact}`) || url.includes(`/${h.toLowerCase()}`)
+    })
   )
   if (byLink) return byLink
 
-  // Name contains login (common for display names)
-  return vtubers.find(v => v.name.toLowerCase().includes(h))
+  // Name contains login as substring (last resort)
+  return vtubers.find(v => compactName(v.name).includes(compact) || v.name.toLowerCase().includes(h.toLowerCase()))
 }
 
 export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSubmitFormProps) {
@@ -61,16 +75,20 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
   const nameTouchedRef = useRef(false)
   const lastFetchedUrlRef = useRef('')
 
-  const applyCreatorHint = (hint: string) => {
+  const applyCreatorHint = (hint: string, displayName?: string | null) => {
     if (!hint || nameTouchedRef.current || prefillVtuberId) return
     const match = matchVtuberFromHint(vtubers, hint)
+      || (displayName ? matchVtuberFromHint(vtubers, displayName) : undefined)
     if (match) {
       setSelectedVTuber(match.id)
       setFreeTextName('')
+      setAuthorFromMeta(match.name)
     } else if (!selectedVTuber) {
-      setFreeTextName(hint)
+      // Prefer a human display name when oEmbed provides one; keep channel for matching
+      const label = displayName?.trim() || hint
+      setFreeTextName(label)
+      setAuthorFromMeta(label)
     }
-    setAuthorFromMeta(hint)
   }
 
   const handleUrlChange = (value: string) => {
@@ -113,8 +131,14 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
           setTitle(data.title)
           setTitleAutoFilled(true)
         }
-        const hint = (data.channel || data.author) as string | undefined
-        if (hint) applyCreatorHint(hint)
+        const channel = (data.channel as string | undefined) || extractTwitchChannel(url)
+        const author = data.author as string | undefined
+        // Channel login is identity; author may be spaced display name from oEmbed
+        if (channel) {
+          applyCreatorHint(channel, author && compactName(author) !== compactName(channel) ? author : null)
+        } else if (author) {
+          applyCreatorHint(author)
+        }
       })
       .catch(() => {})
       .finally(() => {
@@ -287,7 +311,7 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
           <div>
             <label className="block text-sm font-medium text-vault-cream mb-1.5">
               Creator name
-              {authorFromMeta && !nameTouchedRef.current && freeTextName.toLowerCase() === authorFromMeta.toLowerCase() && (
+              {authorFromMeta && !nameTouchedRef.current && freeTextName && (
                 <span className="ml-2 text-xs text-vault-gold font-normal">from link</span>
               )}
             </label>
