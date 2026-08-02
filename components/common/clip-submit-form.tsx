@@ -6,14 +6,34 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useVibeTags, useVTubers } from '@/hooks/use-data'
 import { useAuth } from '@/lib/auth-context'
-import { validateClipUrl, extractVideoId, parseTimestamp } from '@/lib/embed-utils'
+import { validateClipUrl, extractVideoId, extractTwitchChannel } from '@/lib/embed-utils'
 import { Plus, AlertCircle, CheckCircle, Link as LinkIcon, Loader2 } from 'lucide-react'
+import type { VTuber } from '@/lib/types'
 
 interface ClipSubmitFormProps {
   prefillVtuberId?: string
   onSuccess?: () => void
   onCancel?: () => void
 }
+
+function matchVtuberFromHint(vtubers: VTuber[], hint: string): VTuber | undefined {
+  const h = hint.trim().toLowerCase()
+  if (!h) return undefined
+
+  // Exact name
+  const exact = vtubers.find(v => v.name.toLowerCase() === h)
+  if (exact) return exact
+
+  // Twitch/YouTube link contains the login (e.g. twitch.tv/maikyua)
+  const byLink = vtubers.find(v =>
+    (v.externalLinks ?? []).some(l => l.url.toLowerCase().includes(`/${h}`))
+  )
+  if (byLink) return byLink
+
+  // Name contains login (common for display names)
+  return vtubers.find(v => v.name.toLowerCase().includes(h))
+}
+
 export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSubmitFormProps) {
   const { vibeTags } = useVibeTags()
   const { vtubers } = useVTubers()
@@ -41,6 +61,18 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
   const nameTouchedRef = useRef(false)
   const lastFetchedUrlRef = useRef('')
 
+  const applyCreatorHint = (hint: string) => {
+    if (!hint || nameTouchedRef.current || prefillVtuberId) return
+    const match = matchVtuberFromHint(vtubers, hint)
+    if (match) {
+      setSelectedVTuber(match.id)
+      setFreeTextName('')
+    } else if (!selectedVTuber) {
+      setFreeTextName(hint)
+    }
+    setAuthorFromMeta(hint)
+  }
+
   const handleUrlChange = (value: string) => {
     setUrl(value)
     setUrlError(null)
@@ -54,7 +86,13 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
       setUrlError(validation.error || 'Invalid URL')
     } else {
       const info = extractVideoId(value)
-      if (info) { setExtractedInfo(info); setUrlValid(true) }
+      if (info) {
+        setExtractedInfo(info)
+        setUrlValid(true)
+        // Instant Twitch channel from path (no network wait)
+        const channel = extractTwitchChannel(value)
+        if (channel) applyCreatorHint(channel)
+      }
     }
   }
 
@@ -75,19 +113,8 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
           setTitle(data.title)
           setTitleAutoFilled(true)
         }
-        if (data.author) {
-          setAuthorFromMeta(data.author)
-          // Try match existing VTuber by name (case-insensitive)
-          const match = vtubers.find(
-            v => v.name.toLowerCase() === String(data.author).toLowerCase()
-          )
-          if (match && !prefillVtuberId && !selectedVTuber) {
-            setSelectedVTuber(match.id)
-          } else if (!match && !nameTouchedRef.current && !selectedVTuber) {
-            // Unknown creator — prefill free-text name from channel author
-            setFreeTextName(data.author)
-          }
-        }
+        const hint = (data.channel || data.author) as string | undefined
+        if (hint) applyCreatorHint(hint)
       })
       .catch(() => {})
       .finally(() => {
@@ -95,7 +122,8 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
       })
 
     return () => { cancelled = true }
-  }, [url, urlValid, vtubers, prefillVtuberId, selectedVTuber])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, urlValid, vtubers, prefillVtuberId])
 
   const toggleTag = (tagId: string) => {
     setSelectedTags(prev =>
@@ -193,6 +221,7 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
         {extractedInfo && (
           <p className="mt-1 text-xs text-vault-gold flex items-center gap-1">
             <LinkIcon className="h-3 w-3" /> Detected: {extractedInfo.platform}
+            {authorFromMeta && ` · ${authorFromMeta}`}
             {metaLoading && ' · pulling title…'}
             {!metaLoading && titleAutoFilled && ' · title pulled from link'}
           </p>
@@ -239,7 +268,6 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
             onChange={e => {
               setSelectedVTuber(e.target.value)
               if (e.target.value) {
-                // Clear free-text when picking an existing profile
                 setFreeTextName('')
                 nameTouchedRef.current = false
               }
@@ -257,7 +285,7 @@ export function ClipSubmitForm({ prefillVtuberId, onSuccess, onCancel }: ClipSub
           <div>
             <label className="block text-sm font-medium text-vault-cream mb-1.5">
               Creator name
-              {authorFromMeta && !nameTouchedRef.current && freeTextName === authorFromMeta && (
+              {authorFromMeta && !nameTouchedRef.current && freeTextName.toLowerCase() === authorFromMeta.toLowerCase() && (
                 <span className="ml-2 text-xs text-vault-gold font-normal">from link</span>
               )}
             </label>

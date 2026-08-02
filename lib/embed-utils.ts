@@ -83,6 +83,20 @@ export function getTwitterEmbedUrl(tweetId: string): string {
   return `https://twitter.com/i/web/status/${tweetId}`;
 }
 
+/**
+ * Pull broadcaster login from Twitch clip/channel URLs.
+ * e.g. https://www.twitch.tv/maikyua/clip/HappyBloodyEgg... → "maikyua"
+ */
+export function extractTwitchChannel(url: string): string | null {
+  const channelClip = url.match(/twitch\.tv\/([a-zA-Z0-9_]{2,25})\/clip\//i)
+  if (channelClip) return channelClip[1].toLowerCase()
+
+  const channelVideos = url.match(/twitch\.tv\/([a-zA-Z0-9_]{2,25})\/videos?\//i)
+  if (channelVideos) return channelVideos[1].toLowerCase()
+
+  return null
+}
+
 export function extractVideoId(url: string): { platform: 'youtube' | 'twitch' | 'twitter'; videoId: string } | null {
   // YouTube patterns
   const youtubePatterns = [

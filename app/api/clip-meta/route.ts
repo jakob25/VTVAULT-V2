@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { extractVideoId, validateClipUrl } from '@/lib/embed-utils'
+import { extractVideoId, extractTwitchChannel, validateClipUrl } from '@/lib/embed-utils'
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get('url')?.trim()
@@ -22,6 +22,12 @@ export async function GET(req: NextRequest) {
     let thumbnail: string | null = null
     let author: string | null = null
 
+    // Twitch channel is often in the path: twitch.tv/{channel}/clip/...
+    const twitchChannel = extracted.platform === 'twitch' ? extractTwitchChannel(url) : null
+    if (twitchChannel) {
+      author = twitchChannel
+    }
+
     if (extracted.platform === 'youtube') {
       const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`
       const res = await fetch(oembedUrl, { next: { revalidate: 3600 } })
@@ -43,7 +49,11 @@ export async function GET(req: NextRequest) {
         const data = await res.json()
         title = data.title ?? null
         thumbnail = data.thumbnail_url ?? null
-        author = data.author_name ?? null
+        // Prefer URL channel login (stable); fall back to oEmbed author_name
+        if (!author) author = data.author_name ?? null
+        else if (data.author_name && data.author_name.toLowerCase() !== author.toLowerCase()) {
+          // Keep URL login as primary match key; title still from oEmbed
+        }
       }
       // No reliable free thumb fallback for Twitch without API keys
     } else if (extracted.platform === 'twitter') {
@@ -66,9 +76,11 @@ export async function GET(req: NextRequest) {
       title,
       thumbnail,
       author,
+      channel: twitchChannel,
     })
   } catch (e) {
     console.error('clip-meta error:', e)
+    const twitchChannel = extracted.platform === 'twitch' ? extractTwitchChannel(url) : null
     return NextResponse.json(
       {
         platform: extracted.platform,
@@ -77,7 +89,8 @@ export async function GET(req: NextRequest) {
         thumbnail: extracted.platform === 'youtube'
           ? `https://i.ytimg.com/vi/${extracted.videoId}/hqdefault.jpg`
           : null,
-        author: null,
+        author: twitchChannel,
+        channel: twitchChannel,
       },
       { status: 200 }
     )
