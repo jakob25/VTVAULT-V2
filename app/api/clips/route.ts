@@ -2,18 +2,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireAuth } from '@/lib/session'
 import { rateLimits } from '@/lib/rate-limit'
 import { supabaseAdmin } from '@/lib/supabase'
-import { extractVideoId } from '@/lib/embed-utils'
+import { extractVideoId, extractTwitchChannel } from '@/lib/embed-utils'
 import { randomUUID } from 'crypto'
-
-export async function GET() {
-  const { data, error } = await supabaseAdmin
-    .from('clips')
-    .select('*')
-    .order('created_at', { ascending: false })
-
-  if (error) return NextResponse.json({ error: 'Failed to fetch clips.' }, { status: 500 })
-  return NextResponse.json(data)
-}
 
 function platformLabelFromUrl(url: string): string {
   const extracted = extractVideoId(url)
@@ -28,12 +18,21 @@ function compactName(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+function twitchLinkFromUrl(clipUrl: string): string {
+  const channel = extractTwitchChannel(clipUrl)
+  return channel ? `https://www.twitch.tv/${channel}` : ''
+}
+
+/**
+ * Find existing VTuber by name/handle (spaces ignored) or create an approved stub.
+ * Stubs are intentional for clip-sourced creators not yet fully in the Vault.
+ */
 async function resolveOrCreateStubProfile(opts: {
   profileId: string | null | undefined
   nameFromBody: string
   clipUrl: string
   submittedBy: string
-}): Promise<{ profileId: string | null; resolvedName: string | null; createdStub: boolean }> {
+}): Promise<{ profileId: string | null; resolvedName: string | null; createdStub: boolean; stubError?: string }> {
   const { profileId, nameFromBody, clipUrl, submittedBy } = opts
 
   if (profileId) {
@@ -73,8 +72,8 @@ async function resolveOrCreateStubProfile(opts: {
     }
   }
 
-  // Handle match (often the Twitch login without spaces)
   if (compact) {
+    // Handle match (Twitch login without spaces)
     const { data: byHandle } = await supabaseAdmin
       .from('vtubers')
       .select('id, name, handle')
@@ -90,13 +89,11 @@ async function resolveOrCreateStubProfile(opts: {
       }
     }
 
-    // Compact name match: "maikyua" → "Mai Kuyua"
-    // Pull a bounded set of approved profiles and compare without spaces
+    // Compact name match across approved + unapproved (stubs may be either)
     const { data: candidates } = await supabaseAdmin
       .from('vtubers')
       .select('id, name, handle')
-      .eq('approved', true)
-      .limit(2000)
+      .limit(3000)
 
     const byCompact = (candidates ?? []).find(
       (v: { id: string; name: string; handle?: string }) =>
@@ -112,30 +109,130 @@ async function resolveOrCreateStubProfile(opts: {
   }
 
   // Auto-create approved stub so they get a live profile immediately
-  const id = `vt_${compact.slice(0, 16) || 'unknown'}_${randomUUID().slice(0, 6)}`
+  const id = `vt_${(compact || 'unknown').slice(0, 16)}_${randomUUID().slice(0, 6)}`
   const platform = platformLabelFromUrl(clipUrl)
+  const link = twitchLinkFromUrl(clipUrl)
+  const handle = (compact || id).slice(0, 24)
 
-  const { error: insertError } = await supabaseAdmin.from('vtubers').insert({
-    id,
-    name: nameFromBody,
-    handle: compact.slice(0, 24) || id.slice(0, 16),
-    platform,
-    link: '',
-    bio: '',
-    tags: [],
-    avatar_url: null,
-    approved: true,
-    nominated_by: submittedBy,
-    spotlight: false,
-  })
+  // Full row (same shape as /api/vtubers nominator)
+  let insertError = (
+    await supabaseAdmin.from('vtubers').insert({
+      id,
+      name: nameFromBody,
+      handle,
+      platform,
+      link,
+      bio: '',
+      tags: [],
+      avatar_url: null,
+      approved: true,
+      nominated_by: submittedBy,
+      spotlight: false,
+    })
+  ).error
+
+  // nominated_by FK / case mismatch → retry without it
+  if (insertError && /nominated_by|foreign key|users/i.test(insertError.message)) {
+    console.error('stub insert retry without nominated_by:', insertError.message)
+    insertError = (
+      await supabaseAdmin.from('vtubers').insert({
+        id,
+        name: nameFromBody,
+        handle,
+        platform,
+        link,
+        bio: '',
+        tags: [],
+        avatar_url: null,
+        approved: true,
+        spotlight: false,
+      })
+    ).error
+  }
+
+  // Schema drift → minimal required columns only
+  if (insertError) {
+    console.error('stub insert minimal retry:', insertError.message, insertError.code)
+    insertError = (
+      await supabaseAdmin.from('vtubers').insert({
+        id,
+        name: nameFromBody,
+        handle,
+        approved: true,
+      })
+    ).error
+  }
 
   if (insertError) {
     console.error('stub vtuber create failed:', insertError.message, insertError.code, insertError.details)
-    // Fall back to name-only clip (no profile link)
-    return { profileId: null, resolvedName: nameFromBody, createdStub: false }
+    return {
+      profileId: null,
+      resolvedName: nameFromBody,
+      createdStub: false,
+      stubError: insertError.message,
+    }
   }
 
   return { profileId: id, resolvedName: nameFromBody, createdStub: true }
+}
+
+/**
+ * For clips that landed with vtuber_name but no profile_id (stub failed or
+ * profile_id column rejected text ids), ensure a VTuber row exists so they
+ * show up in Needs Help / maps. Best-effort link update when schema allows.
+ */
+async function backfillStubProfilesForOrphanClips() {
+  const { data: orphans } = await supabaseAdmin
+    .from('clips')
+    .select('id, vtuber_name, clip_url, submitter, profile_id')
+    .is('profile_id', null)
+    .not('vtuber_name', 'is', null)
+    .limit(50)
+
+  if (!orphans?.length) return
+
+  for (const row of orphans) {
+    const name = (row.vtuber_name as string | null)?.trim()
+    if (!name) continue
+
+    const resolved = await resolveOrCreateStubProfile({
+      profileId: null,
+      nameFromBody: name,
+      clipUrl: (row.clip_url as string) || '',
+      submittedBy: (row.submitter as string) || 'system',
+    })
+
+    if (!resolved.profileId) continue
+
+    // Best-effort: attach profile_id if the column accepts text vt_ ids
+    const { error } = await supabaseAdmin
+      .from('clips')
+      .update({ profile_id: resolved.profileId })
+      .eq('id', row.id)
+      .is('profile_id', null)
+
+    if (error) {
+      // Column type/FK mismatch is expected on some schemas — stub still exists.
+      console.error('orphan clip profile_id link skipped:', row.id, error.message)
+    }
+  }
+}
+
+export async function GET() {
+  // Ensure clip-sourced creators get profiles even if original submit missed it
+  try {
+    await backfillStubProfilesForOrphanClips()
+  } catch (e) {
+    console.error('clip stub backfill error:', e)
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from('clips')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  if (error) return NextResponse.json({ error: 'Failed to fetch clips.' }, { status: 500 })
+  return NextResponse.json(data)
 }
 
 export async function POST(req: NextRequest) {
@@ -205,9 +302,9 @@ export async function POST(req: NextRequest) {
 
   let { error } = await supabaseAdmin.from('clips').insert(baseRow)
 
-  // FK / invalid profile → retry without profile_id
-  if (error && resolved.profileId && (error.code === '23503' || /foreign key|profile_id/i.test(error.message))) {
-    console.error('clips insert FK retry without profile_id:', error.message)
+  // FK / type mismatch on profile_id → keep the clip, drop the link
+  if (error && resolved.profileId && (error.code === '23503' || /foreign key|profile_id|uuid|invalid input/i.test(error.message))) {
+    console.error('clips insert retry without profile_id:', error.message)
     const retryRow = { ...baseRow, profile_id: null }
     const retry = await supabaseAdmin.from('clips').insert(retryRow)
     error = retry.error
@@ -250,6 +347,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       profile_id: resolved.profileId,
       created_stub: resolved.createdStub,
+      stub_error: resolved.stubError ?? null,
     },
     { status: 201 }
   )
