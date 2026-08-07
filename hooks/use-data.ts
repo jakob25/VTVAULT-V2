@@ -219,24 +219,35 @@ export function useClips() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase
-      .from('clips')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .then(({ data }) => {
-        const mapped: Clip[] = (data ?? []).map((c: DbClip) => ({
-          id: c.id,
-          vtuberId: c.profile_id ?? '',
-          title: c.title,
-          platform: c.clip_url?.includes('youtube') ? 'youtube' : 'twitch',
-          videoId: c.clip_url ?? '',
-          vibeTags: c.tags ?? [],
-          type: 'raw' as const,
-          submittedBy: c.submitter ?? '',
-          votes: { up: c.upvotes ?? 0, down: 0 },
-          createdAt: c.created_at,
-        }))
+    // Route through /api/clips (service role). Direct anon supabase.select is
+    // blocked by RLS on the clips table, so the page always looked empty.
+    fetch('/api/clips')
+      .then(r => (r.ok ? r.json() : []))
+      .then((data: DbClip[] | { error?: string }) => {
+        const rows = Array.isArray(data) ? data : []
+        const mapped: Clip[] = rows.map((c: DbClip) => {
+          const url = c.clip_url ?? ''
+          const isYoutube = /youtube\.com|youtu\.be/i.test(url)
+          return {
+            id: c.id,
+            vtuberId: c.profile_id ?? '',
+            title: c.title,
+            platform: isYoutube ? 'youtube' : 'twitch',
+            // Keep full URL for Twitch (ClipCard uses videoId as the external href).
+            // For YouTube, prefer the raw id when we can parse it; otherwise keep URL.
+            videoId: url,
+            vibeTags: c.tags ?? [],
+            type: 'raw' as const,
+            submittedBy: c.submitter ?? c.vtuber_name ?? '',
+            votes: { up: c.upvotes ?? 0, down: 0 },
+            createdAt: c.created_at,
+          }
+        })
         setClips(mapped)
+        setLoading(false)
+      })
+      .catch(() => {
+        setClips([])
         setLoading(false)
       })
   }, [])
