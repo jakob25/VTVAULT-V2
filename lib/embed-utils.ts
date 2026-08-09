@@ -175,3 +175,56 @@ export function getEmbedUrl(platform: 'youtube' | 'twitch' | 'twitter', videoId:
   }
   return videoId;
 }
+
+/** Sync YouTube thumb from a full URL or bare 11-char id. */
+export function getYouTubeThumbnailUrl(urlOrId: string): string | null {
+  if (/^[a-zA-Z0-9_-]{11}$/.test(urlOrId)) {
+    return `https://i.ytimg.com/vi/${urlOrId}/hqdefault.jpg`
+  }
+  const extracted = extractVideoId(urlOrId)
+  if (extracted?.platform === 'youtube') {
+    return `https://i.ytimg.com/vi/${extracted.videoId}/hqdefault.jpg`
+  }
+  return null
+}
+
+/**
+ * Resolve a thumbnail for a clip URL.
+ * YouTube: i.ytimg.com (instant).
+ * Twitch: scrape og:image from the clip page (oEmbed is deprecated).
+ */
+export async function resolveClipThumbnail(url: string): Promise<string | null> {
+  const extracted = extractVideoId(url)
+  if (!extracted) return null
+
+  if (extracted.platform === 'youtube') {
+    return `https://i.ytimg.com/vi/${extracted.videoId}/hqdefault.jpg`
+  }
+
+  if (extracted.platform === 'twitch') {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (compatible; ObscuraVT/1.0; +https://obscuravt.com)',
+          Accept: 'text/html',
+        },
+        // Cache thumbs for a day at the edge when available
+        next: { revalidate: 86400 },
+      } as RequestInit)
+      if (!res.ok) return null
+      const html = await res.text()
+      const m =
+        html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i) ||
+        html.match(/content=["']([^"']+)["']\s+property=["']og:image["']/i)
+      const thumb = m?.[1]?.trim() || null
+      // Ignore generic Twitch logo fallbacks
+      if (thumb && /twitch_logo|ttv-static-metadata\/twitch/i.test(thumb)) return null
+      return thumb
+    } catch {
+      return null
+    }
+  }
+
+  return null
+}
