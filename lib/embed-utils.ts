@@ -188,10 +188,26 @@ export function getYouTubeThumbnailUrl(urlOrId: string): string | null {
   return null
 }
 
+function isGenericTwitchLogo(url: string): boolean {
+  return /twitch_logo|ttv-static-metadata\/twitch/i.test(url)
+}
+
+function pickOgImage(html: string): string | null {
+  const m =
+    html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i) ||
+    html.match(/content=["']([^"']+)["']\s+property=["']og:image["']/i) ||
+    html.match(/name=["']twitter:image["']\s+content=["']([^"']+)["']/i) ||
+    html.match(/content=["']([^"']+)["']\s+name=["']twitter:image["']/i)
+  const thumb = m?.[1]?.trim() || null
+  if (!thumb || isGenericTwitchLogo(thumb)) return null
+  return thumb
+}
+
 /**
  * Resolve a thumbnail for a clip URL.
  * YouTube: i.ytimg.com (instant).
  * Twitch: scrape og:image from the clip page (oEmbed is deprecated).
+ * Twitch serves the generic logo to bot UAs — use a browser UA.
  */
 export async function resolveClipThumbnail(url: string): Promise<string | null> {
   const extracted = extractVideoId(url)
@@ -202,25 +218,37 @@ export async function resolveClipThumbnail(url: string): Promise<string | null> 
   }
 
   if (extracted.platform === 'twitch') {
+    // Prefer full channel/clip URL when available (better og:image than clips.twitch.tv alone)
+    const scrapeUrl = url.includes('twitch.tv') ? url : `https://clips.twitch.tv/${extracted.videoId}`
+
     try {
-      const res = await fetch(url, {
+      const res = await fetch(scrapeUrl, {
         headers: {
           'User-Agent':
-            'Mozilla/5.0 (compatible; ObscuraVT/1.0; +https://obscuravt.com)',
-          Accept: 'text/html',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
         },
-        // Cache thumbs for a day at the edge when available
         next: { revalidate: 86400 },
       } as RequestInit)
       if (!res.ok) return null
       const html = await res.text()
-      const m =
-        html.match(/property=["']og:image["']\s+content=["']([^"']+)["']/i) ||
-        html.match(/content=["']([^"']+)["']\s+property=["']og:image["']/i)
-      const thumb = m?.[1]?.trim() || null
-      // Ignore generic Twitch logo fallbacks
-      if (thumb && /twitch_logo|ttv-static-metadata\/twitch/i.test(thumb)) return null
-      return thumb
+
+      const fromMeta = pickOgImage(html)
+      if (fromMeta) return fromMeta
+
+      // Fallback: first real clip thumb asset embedded in the page
+      const asset =
+        html.match(
+          /https:\/\/static-cdn\.jtvnw\.net\/twitch-video-assets\/[^"'\s<>]+\/thumb-[^"'\s<>]+-1280x720\.jpg/i
+        ) ||
+        html.match(
+          /https:\/\/static-cdn\.jtvnw\.net\/twitch-video-assets\/[^"'\s<>]+\/thumb-[^"'\s<>]+\.jpg/i
+        )
+      const assetUrl = asset?.[0]?.trim() || null
+      if (assetUrl && !isGenericTwitchLogo(assetUrl)) return assetUrl
+
+      return null
     } catch {
       return null
     }
