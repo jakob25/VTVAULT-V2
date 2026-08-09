@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
-import type { VTuber, Constellation, Clip, Bet, BetOption, VibeTag } from '@/lib/types'
+import type { VTuber, Clip, Bet, BetOption, VibeTag } from '@/lib/types'
 
 // ── Types matching Supabase rows ──────────────────────────────────────────────
 
@@ -48,6 +48,7 @@ interface DbClip {
   upvotes: number
   created_at: string
   vtuber_name: string | null
+  thumbnail_url?: string | null
 }
 
 interface DbCanonicalTag {
@@ -172,7 +173,6 @@ export function useBets(refreshKey?: number) {
 
       if (!betRows) { setLoading(false); return }
 
-      // For each bet get entry totals per option
       const mapped: Bet[] = await Promise.all(
         betRows.map(async (b: DbBet) => {
           const { data: entries } = await supabase
@@ -219,8 +219,6 @@ export function useClips() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Route through /api/clips (service role). Direct anon supabase.select is
-    // blocked by RLS on the clips table, so the page always looked empty.
     fetch('/api/clips')
       .then(r => (r.ok ? r.json() : []))
       .then((data: DbClip[] | { error?: string }) => {
@@ -233,14 +231,13 @@ export function useClips() {
             vtuberId: c.profile_id ?? '',
             title: c.title,
             platform: isYoutube ? 'youtube' : 'twitch',
-            // Keep full URL for Twitch (ClipCard uses videoId as the external href).
-            // For YouTube, prefer the raw id when we can parse it; otherwise keep URL.
             videoId: url,
             vibeTags: c.tags ?? [],
             type: 'raw' as const,
             submittedBy: c.submitter ?? c.vtuber_name ?? '',
             votes: { up: c.upvotes ?? 0, down: 0 },
             createdAt: c.created_at,
+            thumbnailUrl: c.thumbnail_url ?? null,
           }
         })
         setClips(mapped)
