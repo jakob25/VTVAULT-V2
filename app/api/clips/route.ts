@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireAuth } from '@/lib/session'
 import { rateLimits } from '@/lib/rate-limit'
 import { supabaseAdmin } from '@/lib/supabase'
-import { extractVideoId, extractTwitchChannel } from '@/lib/embed-utils'
+import { extractVideoId, extractTwitchChannel, resolveClipThumbnail } from '@/lib/embed-utils'
 import { randomUUID } from 'crypto'
 
 function platformLabelFromUrl(url: string): string {
@@ -23,10 +23,6 @@ function twitchLinkFromUrl(clipUrl: string): string {
   return channel ? `https://www.twitch.tv/${channel}` : ''
 }
 
-/**
- * Find existing VTuber by name/handle (spaces ignored) or create an approved stub.
- * Stubs are intentional for clip-sourced creators not yet fully in the Vault.
- */
 async function resolveOrCreateStubProfile(opts: {
   profileId: string | null | undefined
   nameFromBody: string
@@ -56,7 +52,6 @@ async function resolveOrCreateStubProfile(opts: {
 
   const compact = compactName(nameFromBody)
 
-  // Exact name match
   const { data: existingExact } = await supabaseAdmin
     .from('vtubers')
     .select('id, name')
@@ -73,7 +68,6 @@ async function resolveOrCreateStubProfile(opts: {
   }
 
   if (compact) {
-    // Handle match (Twitch login without spaces)
     const { data: byHandle } = await supabaseAdmin
       .from('vtubers')
       .select('id, name, handle')
@@ -89,7 +83,6 @@ async function resolveOrCreateStubProfile(opts: {
       }
     }
 
-    // Compact name match across approved + unapproved (stubs may be either)
     const { data: candidates } = await supabaseAdmin
       .from('vtubers')
       .select('id, name, handle')
@@ -108,13 +101,11 @@ async function resolveOrCreateStubProfile(opts: {
     }
   }
 
-  // Auto-create approved stub so they get a live profile immediately
   const id = `vt_${(compact || 'unknown').slice(0, 16)}_${randomUUID().slice(0, 6)}`
   const platform = platformLabelFromUrl(clipUrl)
   const link = twitchLinkFromUrl(clipUrl)
   const handle = (compact || id).slice(0, 24)
 
-  // Full row (same shape as /api/vtubers nominator)
   let insertError = (
     await supabaseAdmin.from('vtubers').insert({
       id,
@@ -131,9 +122,7 @@ async function resolveOrCreateStubProfile(opts: {
     })
   ).error
 
-  // nominated_by FK / case mismatch → retry without it
   if (insertError && /nominated_by|foreign key|users/i.test(insertError.message)) {
-    console.error('stub insert retry without nominated_by:', insertError.message)
     insertError = (
       await supabaseAdmin.from('vtubers').insert({
         id,
@@ -150,9 +139,7 @@ async function resolveOrCreateStubProfile(opts: {
     ).error
   }
 
-  // Schema drift → minimal required columns only
   if (insertError) {
-    console.error('stub insert minimal retry:', insertError.message, insertError.code)
     insertError = (
       await supabaseAdmin.from('vtubers').insert({
         id,
@@ -164,7 +151,7 @@ async function resolveOrCreateStubProfile(opts: {
   }
 
   if (insertError) {
-    console.error('stub vtuber create failed:', insertError.message, insertError.code, insertError.details)
+    console.error('stub vtuber create failed:', insertError.message, insertError.code)
     return {
       profileId: null,
       resolvedName: nameFromBody,
@@ -176,11 +163,6 @@ async function resolveOrCreateStubProfile(opts: {
   return { profileId: id, resolvedName: nameFromBody, createdStub: true }
 }
 
-/**
- * For clips that landed with vtuber_name but no profile_id (stub failed or
- * profile_id column rejected text ids), ensure a VTuber row exists so they
- * show up in Needs Help / maps. Best-effort link update when schema allows.
- */
 async function backfillStubProfilesForOrphanClips() {
   const { data: orphans } = await supabaseAdmin
     .from('clips')
@@ -204,7 +186,6 @@ async function backfillStubProfilesForOrphanClips() {
 
     if (!resolved.profileId) continue
 
-    // Best-effort: attach profile_id if the column accepts text vt_ ids
     const { error } = await supabaseAdmin
       .from('clips')
       .update({ profile_id: resolved.profileId })
@@ -212,14 +193,37 @@ async function backfillStubProfilesForOrphanClips() {
       .is('profile_id', null)
 
     if (error) {
-      // Column type/FK mismatch is expected on some schemas — stub still exists.
       console.error('orphan clip profile_id link skipped:', row.id, error.message)
     }
   }
 }
 
+/** Resolve missing thumbs and cache on the row when column exists. */
+async function enrichClipThumbnails(rows: any[]) {
+  const out = []
+  for (const row of rows) {
+    if (row.thumbnail_url) {
+      out.push(row)
+      continue
+    }
+    const url = row.clip_url as string | undefined
+    if (!url) {
+      out.push(row)
+      continue
+    }
+    const thumb = await resolveClipThumbnail(url)
+    if (thumb) {
+      // Best-effort persist (no-op if column missing)
+      await supabaseAdmin.from('clips').update({ thumbnail_url: thumb }).eq('id', row.id)
+      out.push({ ...row, thumbnail_url: thumb })
+    } else {
+      out.push(row)
+    }
+  }
+  return out
+}
+
 export async function GET() {
-  // Ensure clip-sourced creators get profiles even if original submit missed it
   try {
     await backfillStubProfilesForOrphanClips()
   } catch (e) {
@@ -232,7 +236,14 @@ export async function GET() {
     .order('created_at', { ascending: false })
 
   if (error) return NextResponse.json({ error: 'Failed to fetch clips.' }, { status: 500 })
-  return NextResponse.json(data)
+
+  try {
+    const enriched = await enrichClipThumbnails(data ?? [])
+    return NextResponse.json(enriched)
+  } catch (e) {
+    console.error('clip thumb enrich error:', e)
+    return NextResponse.json(data)
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -269,7 +280,6 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  // Duplicate URL check (maybeSingle avoids error when 0 rows)
   const { data: existing } = await supabaseAdmin
     .from('clips')
     .select('id')
@@ -286,6 +296,14 @@ export async function POST(req: NextRequest) {
     submittedBy: username,
   })
 
+  // Resolve preview image (YouTube formula / Twitch og:image)
+  let thumbnail_url: string | null = null
+  try {
+    thumbnail_url = await resolveClipThumbnail(url.trim())
+  } catch {
+    thumbnail_url = null
+  }
+
   const clipId = randomUUID()
   const baseRow: Record<string, unknown> = {
     id: clipId,
@@ -298,11 +316,11 @@ export async function POST(req: NextRequest) {
     vtuber_name: resolved.resolvedName,
     upvotes: 0,
     created_at: new Date().toISOString(),
+    thumbnail_url,
   }
 
   let { error } = await supabaseAdmin.from('clips').insert(baseRow)
 
-  // FK / type mismatch on profile_id → keep the clip, drop the link
   if (error && resolved.profileId && (error.code === '23503' || /foreign key|profile_id|uuid|invalid input/i.test(error.message))) {
     console.error('clips insert retry without profile_id:', error.message)
     const retryRow = { ...baseRow, profile_id: null }
@@ -310,8 +328,7 @@ export async function POST(req: NextRequest) {
     error = retry.error
   }
 
-  // Unknown column (schema drift) → strip optional fields and retry
-  if (error && /column|vtuber_name|description|does not exist/i.test(error.message)) {
+  if (error && /column|thumbnail_url|vtuber_name|description|does not exist/i.test(error.message)) {
     console.error('clips insert schema retry:', error.message)
     const minimal: Record<string, unknown> = {
       id: clipId,
@@ -325,8 +342,18 @@ export async function POST(req: NextRequest) {
     }
     if (/profile_id/i.test(error.message)) minimal.profile_id = null
     if (/tags/i.test(error.message)) delete minimal.tags
+    // Retry without thumbnail if that was the problem
+    if (!/thumbnail_url/i.test(error.message) && thumbnail_url) {
+      minimal.thumbnail_url = thumbnail_url
+    }
     const retry = await supabaseAdmin.from('clips').insert(minimal)
     error = retry.error
+    // Last resort: strip thumbnail
+    if (error && /thumbnail_url/i.test(error.message)) {
+      delete minimal.thumbnail_url
+      const retry2 = await supabaseAdmin.from('clips').insert(minimal)
+      error = retry2.error
+    }
   }
 
   if (error) {
@@ -348,6 +375,7 @@ export async function POST(req: NextRequest) {
       profile_id: resolved.profileId,
       created_stub: resolved.createdStub,
       stub_error: resolved.stubError ?? null,
+      thumbnail_url,
     },
     { status: 201 }
   )
