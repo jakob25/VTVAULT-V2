@@ -26,6 +26,7 @@ export interface Clip {
   vtuberId: string;
   title: string;
   platform: 'youtube' | 'twitch';
+  /** Full source URL (Twitch) or video id / URL (YouTube). */
   videoId: string;
   startTime?: number; // seconds
   endTime?: number;
@@ -34,6 +35,8 @@ export interface Clip {
   submittedBy: string;
   votes: { up: number; down: number };
   createdAt: string;
+  /** Cached preview — YouTube i.ytimg or Twitch og:image */
+  thumbnailUrl?: string | null;
 }
 
 export interface VibeTag {

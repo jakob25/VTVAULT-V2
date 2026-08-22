@@ -4,6 +4,7 @@ import { GlitchHeading } from '@/components/vault/glitch-heading'
 import { VaultDivider, VaultPanel, GalleryWall, GalleryWallItem, StatCard } from '@/components/vault/vault-surfaces'
 import { PulseSectionShell } from '@/components/landing/pulse-section-shell'
 import { supabaseAdmin } from '@/lib/supabase'
+import { resolveClipThumbnail } from '@/lib/embed-utils'
 
 export const revalidate = 30
 
@@ -18,7 +19,7 @@ async function safeQuery<T>(fn: () => PromiseLike<{ data: T | null; error?: any 
 
 async function getPulse() {
   const [
-    clips,
+    clipsRaw,
     fanArt,
     vtubers,
     posts,
@@ -32,7 +33,7 @@ async function getPulse() {
       () =>
         supabaseAdmin
           .from('clips')
-          .select('id,title,clip_url,profile_id,submitter,upvotes,created_at,vtuber_name')
+          .select('id,title,clip_url,profile_id,submitter,upvotes,created_at,vtuber_name,thumbnail_url')
           .order('created_at', { ascending: false })
           .limit(6),
       [] as any[]
@@ -100,7 +101,6 @@ async function getPulse() {
       },
       0
     ),
-    // Incomplete stubs: approved, empty bio, empty tags — community can help fill them
     safeQuery(
       () =>
         supabaseAdmin
@@ -113,11 +113,31 @@ async function getPulse() {
     ),
   ])
 
-  const needsHelpList = (needsHelp as any[]).filter(v => {
-    const bioEmpty = !(v.bio && String(v.bio).trim())
-    const tagsEmpty = !Array.isArray(v.tags) || v.tags.length === 0
-    return bioEmpty && tagsEmpty
-  }).slice(0, 6)
+  // Ensure each clip has a preview image (resolve + cache if missing)
+  const clips = await Promise.all(
+    (clipsRaw as any[]).map(async c => {
+      if (c.thumbnail_url) return c
+      if (!c.clip_url) return c
+      try {
+        const thumb = await resolveClipThumbnail(c.clip_url)
+        if (thumb) {
+          await supabaseAdmin.from('clips').update({ thumbnail_url: thumb }).eq('id', c.id)
+          return { ...c, thumbnail_url: thumb }
+        }
+      } catch {
+        /* ignore */
+      }
+      return c
+    })
+  )
+
+  const needsHelpList = (needsHelp as any[])
+    .filter(v => {
+      const bioEmpty = !(v.bio && String(v.bio).trim())
+      const tagsEmpty = !Array.isArray(v.tags) || v.tags.length === 0
+      return bioEmpty && tagsEmpty
+    })
+    .slice(0, 6)
 
   return {
     clips,
@@ -181,7 +201,6 @@ export default async function PulseFeed() {
         </div>
       </section>
 
-      {/* Wider layout: ~half the previous side gutter so color shells dominate the page */}
       <div className="mx-auto w-full max-w-[1600px] px-2 sm:px-3 py-5 space-y-5">
         {needsHelpList.length > 0 && (
           <PulseSectionShell accent="from-vault-gold/45 via-vault-gold/20 to-transparent" staggerIndex={0}>
@@ -234,14 +253,30 @@ export default async function PulseFeed() {
                   href={c.clip_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="vault-card rounded-xl p-4 hover:border-vault-gold/30 transition-all block bg-vault-deep/40"
+                  className="vault-card rounded-xl overflow-hidden hover:border-vault-gold/30 transition-all block bg-vault-deep/40 border border-border"
                 >
-                  <p className="font-medium text-vault-cream text-sm line-clamp-2 mb-2">{c.title}</p>
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>by {c.submitter ?? c.vtuber_name ?? 'unknown'}</span>
-                    <span className="flex items-center gap-1 text-vault-gold">
-                      <ExternalLink className="h-3 w-3" /> {c.upvotes ?? 0} ▲
-                    </span>
+                  <div className="relative aspect-video bg-vault-deep">
+                    {c.thumbnail_url ? (
+                      <img
+                        src={c.thumbnail_url}
+                        alt=""
+                        className="absolute inset-0 h-full w-full object-cover"
+                      />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center text-muted-foreground text-xs">
+                        No preview
+                      </div>
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-t from-vault-deep/80 via-transparent to-transparent" />
+                  </div>
+                  <div className="p-3">
+                    <p className="font-medium text-vault-cream text-sm line-clamp-2 mb-2">{c.title}</p>
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span>by {c.submitter ?? c.vtuber_name ?? 'unknown'}</span>
+                      <span className="flex items-center gap-1 text-vault-gold">
+                        <ExternalLink className="h-3 w-3" /> {c.upvotes ?? 0} ▲
+                      </span>
+                    </div>
                   </div>
                 </a>
               ))}

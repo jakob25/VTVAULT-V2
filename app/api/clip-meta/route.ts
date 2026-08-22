@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { extractVideoId, extractTwitchChannel, validateClipUrl } from '@/lib/embed-utils'
+import {
+  extractVideoId,
+  extractTwitchChannel,
+  validateClipUrl,
+  resolveClipThumbnail,
+} from '@/lib/embed-utils'
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get('url')?.trim()
@@ -22,7 +27,6 @@ export async function GET(req: NextRequest) {
     let thumbnail: string | null = null
     let author: string | null = null
 
-    // Twitch channel is often in the path: twitch.tv/{channel}/clip/...
     const twitchChannel = extracted.platform === 'twitch' ? extractTwitchChannel(url) : null
     if (twitchChannel) {
       author = twitchChannel
@@ -37,36 +41,21 @@ export async function GET(req: NextRequest) {
         thumbnail = data.thumbnail_url ?? null
         author = data.author_name ?? null
       }
-      // Fallback thumbnail from video id if oEmbed missing thumb
       if (!thumbnail) {
         thumbnail = `https://i.ytimg.com/vi/${extracted.videoId}/hqdefault.jpg`
       }
     } else if (extracted.platform === 'twitch') {
-      // Twitch oEmbed (works for clips and some VODs)
-      const oembedUrl = `https://api.twitch.tv/v5/oembed?url=${encodeURIComponent(url)}`
-      const res = await fetch(oembedUrl, { next: { revalidate: 3600 } })
-      if (res.ok) {
-        const data = await res.json()
-        title = data.title ?? null
-        thumbnail = data.thumbnail_url ?? null
-        // Prefer URL channel login (stable); fall back to oEmbed author_name
-        if (!author) author = data.author_name ?? null
-        else if (data.author_name && data.author_name.toLowerCase() !== author.toLowerCase()) {
-          // Keep URL login as primary match key; title still from oEmbed
-        }
-      }
-      // No reliable free thumb fallback for Twitch without API keys
+      // Twitch oEmbed is dead — scrape og:image from the clip page
+      thumbnail = await resolveClipThumbnail(url)
     } else if (extracted.platform === 'twitter') {
       const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}&omit_script=true`
       const res = await fetch(oembedUrl, { next: { revalidate: 3600 } })
       if (res.ok) {
         const data = await res.json()
-        // Twitter oEmbed gives html; use author_name + a short title from url
         author = data.author_name ?? null
         title = data.author_name
           ? `${data.author_name} on X`
           : `X post ${extracted.videoId}`
-        // No standard thumbnail from oEmbed; leave null
       }
     }
 
@@ -86,9 +75,10 @@ export async function GET(req: NextRequest) {
         platform: extracted.platform,
         videoId: extracted.videoId,
         title: null,
-        thumbnail: extracted.platform === 'youtube'
-          ? `https://i.ytimg.com/vi/${extracted.videoId}/hqdefault.jpg`
-          : null,
+        thumbnail:
+          extracted.platform === 'youtube'
+            ? `https://i.ytimg.com/vi/${extracted.videoId}/hqdefault.jpg`
+            : null,
         author: twitchChannel,
         channel: twitchChannel,
       },
